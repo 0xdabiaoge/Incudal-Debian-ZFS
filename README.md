@@ -27,7 +27,7 @@ Incudal 节点管理脚本旨在为 [Incudal 面板](https://incudal.com) 打造
 ## 🖥️ 交互式 TUI 菜单
 
 ```
-(curl -LfsS https://raw.githubusercontent.com/0xdabiaoge/Incudal-Debian-ZFS/blob/main/Incudal.sh -o /usr/local/bin/incudal || wget -q https://raw.githubusercontent.com/0xdabiaoge/Incudal-Debian-ZFS/blob/main/Incudal.sh -O /usr/local/bin/incudal) && chmod +x /usr/local/bin/incudal && incudal
+(curl -LfsS https://raw.githubusercontent.com/0xdabiaoge/Incudal-Debian-ZFS/main/Incudal.sh -o /usr/local/bin/incudal || wget -q https://raw.githubusercontent.com/0xdabiaoge/Incudal-Debian-ZFS/main/Incudal.sh -O /usr/local/bin/incudal) && chmod +x /usr/local/bin/incudal && incudal
 ```
 
 **快捷命令：incudal**
