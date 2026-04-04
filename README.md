@@ -6,7 +6,7 @@ Incudal 节点管理脚本旨在为 [Incudal 面板](https://incudal.com) 打造
 
 - **🚀 全自动 Incus 部署**：一键完成系统依赖注入、内核参数调整以及网桥管理（支持纯 IPv4 或 NAT+IPv6 模式）。
 - **📦 智能 Debian ZFS 处理**：
-  - 首选从 GitHub Release ([Incudal-Debian-ZFS](https://github.com/0xdabiaoge/Incudal-Debian-ZFS)) 自动匹配内核拉取预编译模块，实现“秒级挂载”。
+  - 首选从 GitHub Release ([Incudal-Debian-ZFS](https://github.com/0xdabiaoge/Incudal-Debian-ZFS/releases/tag/Debian-ZFS)) 自动匹配内核拉取预编译模块，实现“秒级挂载”。
   - 智能回退机制：若无适配的预编译包，可提供即时 DKMS 编译选项。编译完成后自动清理 `build-essential` 等工具链。
 - **🛡️ RFW 入站屏蔽防火墙集成**：
   - 基于 Rust && eBPF 的高性能防护。
