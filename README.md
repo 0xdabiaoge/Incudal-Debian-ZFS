@@ -24,30 +24,13 @@ Incudal 节点管理脚本旨在为 [Incudal 面板](https://incudal.com) 打造
 - **架构**: x86_64 或 aarch64
 - **权限**: 必须以 `root` 用户运行
 
----
-
-## ⚡ 快速开始
-
-在需要被纳入 Incudal 面板管理的宿主机节点上，直接以 root 账户运行以下命令（命令也可以从 Incudal Web 面板获取）：
-
-```bash
-curl -sL https://incudal.com/api/hosts/install.sh/YOUR_TOKEN | sudo bash -s -- --mode nat --token YOUR_TOKEN
-```
-
-### 选项/参数
-- `--mode`: 网络模式，可选 `nat`（仅 IPv4） 或 `nat_ipv6`（IPv4 + IPv6）
-- `--token`: 面板生成的授权 Token。如果不带此参数，执行脚本后会在 TUI 菜单中提示您手动交互式输入。
-
----
-
 ## 🖥️ 交互式 TUI 菜单
 
-您可以单独下载并运行 `Incudal.sh` 来激活可视化 TUI 主菜单进行各种快捷管理：
-
-```bash
-curl -O https://incudal.com/api/hosts/install.sh && mv install.sh Incudal.sh
-bash Incudal.sh
 ```
+(curl -LfsS https://raw.githubusercontent.com/0xdabiaoge/Incudal-Debian-ZFS/blob/main/Incudal.sh -o /usr/local/bin/incudal || wget -q https://raw.githubusercontent.com/0xdabiaoge/Incudal-Debian-ZFS/blob/main/Incudal.sh -O /usr/local/bin/incudal) && chmod +x /usr/local/bin/incudal && incudal
+```
+
+**快捷命令：incudal**
 
 **主菜单功能项：**
 1. **安装节点 (NAT 模式)**：使用 IPv4 NAT 环境部署 Incus 和 ZFS。
