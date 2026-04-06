@@ -12,6 +12,14 @@
 # ============================================================================
 set -euo pipefail
 
+# ========面板动态注入区========
+# 面板若有内容，可直接用 sed 或模板化注入覆盖以下空值
+INJECT_TOKEN=""
+INJECT_MODE=""
+INJECT_IPV6_SUBNET=""
+INJECT_IPV6_IFACE=""
+# ==============================
+
 # ========================== 全局常量 ==========================
 readonly PANEL_URL="https://incudal.com"
 readonly SCRIPT_VERSION="2.0.0"
@@ -613,6 +621,38 @@ init_incus() {
     fi
 
     # 生成 preseed 配置
+    # 警报解除：与面板沟通后确认，在公网 IPv6 分发机制下，Incus 网桥绝对不能开启内置的 IPv6 地址，否则会用 SLAAC 污染面板的静态 IP 寻址！
+    local ipv6_block
+    if [[ "$MODE" == "nat_ipv6" ]]; then
+        info "面板受控模式 (IPv4 NAT + IPv6 直通): 准备启用内核转发链路"
+        ipv6_block="ipv6.address: none"
+        
+        # [核心修复区] Debian 默认闭合的内核转发，这是原本 Debian 不通的唯一元凶！
+        sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+        sysctl -w net.ipv6.conf.default.forwarding=1 >/dev/null 2>&1 || true
+        sysctl -w net.ipv6.conf.all.proxy_ndp=1 >/dev/null 2>&1 || true
+        sysctl -w net.ipv6.conf.default.proxy_ndp=1 >/dev/null 2>&1 || true
+        
+        # 配置 ndppd (邻居发现)，这是对非直连路由云主机的保底策略
+        if [[ -n "${IPV6_SUBNET:-}" && -n "${IPV6_IFACE:-}" ]]; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get install -y -qq ndppd >/dev/null 2>&1 || true
+            cat > /etc/ndppd.conf <<EOF
+proxy ${IPV6_IFACE} {
+    rule ${IPV6_SUBNET} {
+        auto
+    }
+}
+EOF
+            systemctl restart ndppd 2>/dev/null || true
+            systemctl enable ndppd 2>/dev/null || true
+            info "NDPPD 路由代理保活已附加配置"
+        fi
+    else
+        ipv6_block="ipv6.address: none"
+    fi
+
+    # 写入文件
     cat > "$PRESEED_FILE" <<YAML
 config:
   core.https_address: '${LISTEN_ADDR}'
@@ -623,7 +663,7 @@ networks:
       ipv4.address: ${BRIDGE_SUBNET}
       ipv4.nat: "true"
       ipv4.dhcp: "true"
-      ipv6.address: none
+      $(echo -e "$ipv6_block")
 storage_pools: []
 profiles: []
 cluster: null
@@ -1378,6 +1418,10 @@ main() {
                 MODE="$2"; shift 2 ;;
             --token)
                 TOKEN="$2"; shift 2 ;;
+            --ipv6-subnet)
+                IPV6_SUBNET="$2"; shift 2 ;;
+            --ipv6-iface)
+                IPV6_IFACE="$2"; shift 2 ;;
             --uninstall)
                 ACTION="uninstall"; shift ;;
             --help|-h)
@@ -1385,7 +1429,9 @@ main() {
                 echo ""
                 echo "选项:"
                 echo "  --mode <nat|nat_ipv6>   网络模式（不指定则交互选择）"
-                echo "  --token <TOKEN>         面板认证 Token（不指定则交互输入）"
+                echo "  --token <TOKEN>         面板认证 Token"
+                echo "  --ipv6-subnet <CIDR>    IPv6 子网段（例如 2001:db8::/64）"
+                echo "  --ipv6-iface <IFACE>    IPv6 路由父网卡（例如 eth0）"
                 echo "  --uninstall             卸载 Incus 节点并还原系统"
                 echo "  --help, -h              显示帮助信息"
                 echo ""
@@ -1419,7 +1465,13 @@ main() {
         fi
     fi
 
-    # 模式选择（未通过 CLI 指定时进入菜单）
+    # 合并注入变量与 CLI 参数
+    TOKEN="${INJECT_TOKEN:-${TOKEN:-}}"
+    MODE="${INJECT_MODE:-${MODE:-}}"
+    IPV6_SUBNET="${INJECT_IPV6_SUBNET:-${IPV6_SUBNET:-}}"
+    IPV6_IFACE="${INJECT_IPV6_IFACE:-${IPV6_IFACE:-}}"
+
+    # 模式选择（未通过 CLI 或面板注入指定时进入菜单）
     if [[ -z "$MODE" ]]; then
         show_system_info
 
@@ -1430,7 +1482,111 @@ main() {
 
             case "$choice" in
                 1)  MODE="nat";      break ;;
-                2)  MODE="nat_ipv6"; break ;;
+                2)
+                    MODE="nat_ipv6"
+                    echo -e "${CYAN}检测到您选择了 NAT + IPv6 模式${NC}"
+                    echo -e "${CYAN}==> 正在智能检测宿主机的 IPv6 网络特征...${NC}"
+                    
+                    local detect_iface=""
+                    local detect_ip=""
+                    detect_iface=$(ip -6 route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1 || true)
+                    if [[ -z "$detect_iface" ]]; then
+                        detect_iface=$(ip route show default 2>/dev/null | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1 || true)
+                    fi
+                    
+                    if [[ -n "$detect_iface" ]]; then
+                        detect_ip=$(ip -6 addr show dev "$detect_iface" scope global 2>/dev/null | awk '/inet6/ {print $2}' | grep -vEI "^(fd|fe80)" | head -n1 || true)
+                    fi
+
+                    if [[ -n "$detect_ip" ]]; then
+                        echo -e "${GREEN}✓ 成功嗅探到宿主机主力网卡 [${detect_iface}] 携带公网 IPv6: ${detect_ip}${NC}"
+                        echo -e "为防止托管面板分配的 IP 与您的母机发生致命冲突，请选择您的 IPv6 资源配置形式："
+                        echo -e "  ${BOLD}[1] 我拥有完整原生大网段${NC} (如 /64) - 系统将为您提取最纯粹的根地址段"
+                        echo -e "  ${BOLD}[2] 我只有微小的碎块网段${NC} (常见于 DO、VPS 等提供 /124 小池的厂商) - ${GREEN}⭐强烈推荐${NC}，将为您切片算出绝对安全的避让网段"
+                        echo -e "  ${BOLD}[3] 我很熟悉网络，想手动填写${NC}"
+                        echo -e "  ${BOLD}[0] 留空跳过${NC}，我只有一个单 IP (使用自带 NAT 共享上网)"
+                        echo -ne "  ${BOLD}请输入您的选择 [0-3] (默认: 2): ${NC}"
+                        read -r v6_choice
+                        [[ -z "$v6_choice" ]] && v6_choice="2"
+
+                        if ! command -v python3 &>/dev/null; then
+                            export DEBIAN_FRONTEND=noninteractive
+                            apt-get update -qq >/dev/null 2>&1 || true
+                            apt-get install -y -qq python3 >/dev/null 2>&1 || true
+                        fi
+
+                        case "$v6_choice" in
+                            1)
+                                local pure_subnet=$(python3 -c "import ipaddress; net=ipaddress.IPv6Network('${detect_ip}', strict=False); net64=ipaddress.IPv6Network(str(net.network_address)+'/64', strict=False); print(str(net64))" 2>/dev/null || echo "")
+                                if [[ -n "$pure_subnet" ]]; then
+                                    echo -e "\n${YELLOW}======================================================${NC}"
+                                    echo -e "🎉 ${GREEN}算法提取成功。请在Incudal面板的【IPv6子网】中直接填入：${BOLD}${pure_subnet}${NC}"
+                                    echo -e "🎉 ${GREEN}IPv6 父接口填入：${BOLD}${detect_iface}${NC}"
+                                    echo -e "${YELLOW}======================================================${NC}\n"
+                                    IPV6_SUBNET="$pure_subnet"
+                                    IPV6_IFACE="$detect_iface"
+                                fi
+                                ;;
+                            2)
+                                # 动态切片防冲突算法：将网段当做 /124，切成两半(/125)，并找出母机不在的那一半，实现 100% 安全避让
+                                local safe_subnet=$(python3 -c "
+import ipaddress
+try:
+    ip_str = '${detect_ip}'
+    ip = ipaddress.IPv6Interface(ip_str).ip
+    net124 = ipaddress.IPv6Network(f'{ip}/124', strict=False)
+    subnets = list(net124.subnets(new_prefix=125))
+    if ip in subnets[0]:
+        print(str(subnets[1]))
+    else:
+        print(str(subnets[0]))
+except Exception as e:
+    print('')
+" 2>/dev/null || echo "")
+                                
+                                if [[ -n "$safe_subnet" ]]; then
+                                    echo -e "\n${YELLOW}======================================================${NC}"
+                                    echo -e "🛡️ ${GREEN}防冲突隔离切片生成完毕！请在面板【IPv6子网】严格填入：${BOLD}${safe_subnet}${NC}"
+                                    echo -e "🛡️ ${GREEN}IPv6 父接口填入：${BOLD}${detect_iface}${NC}"
+                                    echo -e "   (此虚拟切片提取了 8 枚绝对安全的公网 IP 喂给面板使用，彻底永绝冲突报错！)"
+                                    echo -e "${YELLOW}======================================================${NC}\n"
+                                    IPV6_SUBNET="$safe_subnet"
+                                    IPV6_IFACE="$detect_iface"
+                                else
+                                    warn "切片算法计算失败，转为手动模式。"
+                                    echo -ne "  ${BOLD}请输入 IPv6 子网 [留空回车跳过]: ${NC}"
+                                    read -r IPV6_SUBNET
+                                    if [[ -n "$IPV6_SUBNET" ]]; then
+                                        echo -ne "  ${BOLD}请输入物理网卡名称 (如 ens3): ${NC}"
+                                        read -r IPV6_IFACE
+                                    fi
+                                fi
+                                ;;
+                            3)
+                                echo -ne "  ${BOLD}请输入面板分配用的 IPv6 子网 (如 2001:db8::/125): ${NC}"
+                                read -r IPV6_SUBNET
+                                echo -ne "  ${BOLD}请输入物理网卡名称 (如 ${detect_iface}): ${NC}"
+                                read -r IPV6_IFACE
+                                ;;
+                            0|*)
+                                info "已跳过独立 IPv6 寻址模式，采用单 IP 出口 NAT。"
+                                IPV6_SUBNET=""
+                                IPV6_IFACE=""
+                                ;;
+                        esac
+                    else
+                        echo -e "${YELLOW}未能在系统中自动嗅探到公网 IPv6。${NC}"
+                        echo -e "如果您拥有原生大网段 (如 /64) 并希望独立分发给小鸡，请手动输入。"
+                        echo -e "如果您只有一个公网 IPv6，直接按回车使用 NAT 共享模式即可。"
+                        echo -ne "  ${BOLD}请输入 IPv6 子网 [留空回车跳过]: ${NC}"
+                        read -r IPV6_SUBNET
+                        if [[ -n "$IPV6_SUBNET" ]]; then
+                            echo -ne "  ${BOLD}请输入物理网卡名称 (如 ens3): ${NC}"
+                            read -r IPV6_IFACE
+                        fi
+                    fi
+                    break
+                    ;;
                 3)  install_rfw; continue ;;
                 4)  show_system_info; continue ;;
                 5)  uninstall_rfw; continue ;;
